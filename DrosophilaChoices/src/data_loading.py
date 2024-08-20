@@ -2,8 +2,8 @@ import pandas as pd
 import numpy as np
 
 
-def load_data(timestamp, directory_path):
-    file_paths = [directory_path + f'{timestamp}_ChoiceAssay_VR{i}_.csv' for i in range(1, 5)]
+def load_data(timestamp, directory_path, scene_name):
+    file_paths = [directory_path + f'{timestamp}_{scene_name}_VR{i}_.csv' for i in range(1, 5)]
     dataframes = [pd.read_csv(fp) for fp in file_paths]
     for df in dataframes:
         df['trial_timestamp'] = timestamp
