@@ -41,20 +41,33 @@ class DataLoader:
         with open(json_path, 'r') as file:
             json_data = json.load(file)
         return json_data
+    
+    def load_json_metadata(self, folder_path):
+        """ Load a JSON metadata file ending with 'MetaData.json' and return it as a dictionary. """
+        json_files = glob.glob(os.path.join(folder_path, '*MetaData.json'))
+        if not json_files:
+            print(f"No JSON metadata file ending with 'MetaData.json' found in {folder_path}. Skipping...")
+            return None
+        json_path = json_files[0]  # Assuming only one match is relevant or taking the first match
+        with open(json_path, 'r') as file:
+            json_data = json.load(file)
+        return json_data
 
-    def enrich_dataframe(self, df, json_data):
-            """ Enrich the DataFrame with JSON data based on the CurrentStep index, if available. """
-            if 'CurrentStep' in df.columns:
-                if json_data is not None:
-                    # Extracting sequences information and creating a mapping based on CurrentStep
-                    step_config = {idx: seq for idx, seq in enumerate(json_data['sequences'])}
-                    
-                    # Adding new columns based on the JSON data
-                    df['duration'] = df['CurrentStep'].map(lambda x: step_config.get(x, {}).get('duration'))
-                    df['configFile'] = df['CurrentStep'].map(lambda x: step_config.get(x, {}).get('parameters', {}).get('configFile'))
-            else:
-                print(f"'CurrentStep' column not found in DataFrame.")
-            return df
+    def enrich_dataframe(self, df, json_config_data, json_metadata_data):
+        """ Enrich the DataFrame with JSON data based on the CurrentStep index and add metadata info. """
+        if 'CurrentStep' in df.columns and json_config_data:
+            # Map sequence configurations
+            step_config = {idx: seq for idx, seq in enumerate(json_config_data['sequences'])}
+            df['duration'] = df['CurrentStep'].map(lambda x: step_config.get(x, {}).get('duration'))
+            df['configFile'] = df['CurrentStep'].map(lambda x: step_config.get(x, {}).get('parameters', {}).get('configFile'))
+        
+        if json_metadata_data:
+            # Add experimenter name and comments to each row
+            df['ExperimenterName'] = json_metadata_data.get('ExperimenterName', '').strip()
+            df['Comments'] = json_metadata_data.get('Comments', '').strip()
+        
+        return df
+
 
     def load_all_data(self):
         """ Load all data from all folders, combining CSV and JSON data into a single DataFrame. """
@@ -62,8 +75,9 @@ class DataLoader:
         for folder in self.list_run_folders():
             df = self.load_csv_data(folder)
             json_data = self.load_json_data(folder)  # Load the JSON configuration
+            json_metadata_data = self.load_json_metadata(folder)
             if df is not None:
-                df = self.enrich_dataframe(df, json_data)  # Enrich DataFrame with JSON data
+                df = self.enrich_dataframe(df, json_data, json_metadata_data)  # Enrich DataFrame with JSON data
                 all_data_frames.append(df)
         if all_data_frames:
             return pd.concat(all_data_frames, ignore_index=True)
