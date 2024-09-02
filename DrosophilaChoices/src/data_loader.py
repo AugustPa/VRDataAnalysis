@@ -1,6 +1,7 @@
 import os
 import pandas as pd
 import json
+import glob
 
 class DataLoader:
     def __init__(self, base_path):
@@ -29,17 +30,43 @@ class DataLoader:
             df_list.append(df)
         return pd.concat(df_list, ignore_index=True)
 
+    def load_json_data(self, folder_path):
+        """ Load a JSON configuration file ending with 'sequenceConfig.json' and return it as a dictionary. """
+        # Search for files that match the 'sequenceConfig.json' pattern
+        json_files = glob.glob(os.path.join(folder_path, '*sequenceConfig.json'))
+        if not json_files:
+            print(f"No JSON config file ending with 'sequenceConfig.json' found in {folder_path}. Skipping...")
+            return None
+        json_path = json_files[0]  # Assuming only one match is relevant or taking the first match
+        with open(json_path, 'r') as file:
+            json_data = json.load(file)
+        return json_data
+
+    def enrich_dataframe(self, df, json_data):
+            """ Enrich the DataFrame with JSON data based on the CurrentStep index, if available. """
+            if 'CurrentStep' in df.columns:
+                if json_data is not None:
+                    # Extracting sequences information and creating a mapping based on CurrentStep
+                    step_config = {idx: seq for idx, seq in enumerate(json_data['sequences'])}
+                    
+                    # Adding new columns based on the JSON data
+                    df['duration'] = df['CurrentStep'].map(lambda x: step_config.get(x, {}).get('duration'))
+                    df['configFile'] = df['CurrentStep'].map(lambda x: step_config.get(x, {}).get('parameters', {}).get('configFile'))
+            else:
+                print(f"'CurrentStep' column not found in DataFrame.")
+            return df
 
     def load_all_data(self):
-        """ Load all CSV data from all folders and concatenate them into a single DataFrame. """
+        """ Load all data from all folders, combining CSV and JSON data into a single DataFrame. """
         all_data_frames = []
         for folder in self.list_run_folders():
             df = self.load_csv_data(folder)
+            json_data = self.load_json_data(folder)  # Load the JSON configuration
             if df is not None:
+                df = self.enrich_dataframe(df, json_data)  # Enrich DataFrame with JSON data
                 all_data_frames.append(df)
         if all_data_frames:
             return pd.concat(all_data_frames, ignore_index=True)
         else:
             return pd.DataFrame()  # Return an empty DataFrame if no data
-
 
