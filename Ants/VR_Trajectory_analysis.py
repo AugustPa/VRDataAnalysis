@@ -1,6 +1,8 @@
 import os
 import numpy as np
 import pandas as pd
+import glob
+import json
 import matplotlib.pyplot as plt
 import seaborn as sns
 from scipy.stats import mannwhitneyu
@@ -37,10 +39,14 @@ def process_dataframe(df: pd.DataFrame, trim_seconds: float = 1.0) -> pd.DataFra
 
 def get_combined_df(directory: str, trim_seconds: float = 1.0) -> pd.DataFrame:
     """
-    Recursively load and process CSV files from subdirectories and combine into a single DataFrame.
+    Recursively load and process CSV files from subdirectories and combine into a single DataFrame,
+    incorporating metadata from the JSON file in each directory.
     """
-    subdirectories = [os.path.join(directory, d) for d in os.listdir(directory) 
-                      if os.path.isdir(os.path.join(directory, d))]
+    subdirectories = [
+        os.path.join(directory, d) 
+        for d in os.listdir(directory) 
+        if os.path.isdir(os.path.join(directory, d))
+    ]
 
     if not subdirectories:
         print(f"No subdirectories found in directory: {directory}")
@@ -50,28 +56,75 @@ def get_combined_df(directory: str, trim_seconds: float = 1.0) -> pd.DataFrame:
     for subdir in subdirectories:
         subfolder_name = os.path.basename(subdir)
         print(f"Processing subfolder: {subfolder_name}")
-        file_paths = [os.path.join(subdir, f) for f in os.listdir(subdir) if f.endswith('.csv')]
 
+        # 1. Identify the metadata JSON in the current folder
+        metadata_files = glob.glob(os.path.join(subdir, '*_FlyMetaData.json'))
+        metadata = None
+        if metadata_files:
+            # If there are multiple, just pick the first or handle accordingly
+            meta_path = metadata_files[0]
+            with open(meta_path, 'r') as f:
+                metadata = json.load(f)
+        else:
+            print(f"No JSON metadata file found in subfolder: {subdir}")
+
+        # 2. Parse the relevant fields from the metadata
+        experimenter_name = None
+        comments = None
+        vr_fly_map = {}  # Will map "VR1" -> "FlyID"
+
+        if metadata:
+            experimenter_name = metadata.get("ExperimenterName", "")
+            comments = metadata.get("Comments", "")
+            flies_info = metadata.get("Flies", [])  # list of dicts
+
+            # Build a dict for VR -> FlyID mapping
+            for dct in flies_info:
+                # dct might look like {"VR": "VR1", "FlyID": "41", ...}
+                vr = dct.get("VR")
+                fly_id = dct.get("FlyID")
+                if vr and fly_id:
+                    vr_fly_map[vr] = fly_id
+
+        # 3. Load all CSVs in subfolder
+        file_paths = [
+            os.path.join(subdir, f) 
+            for f in os.listdir(subdir) 
+            if f.endswith('.csv')
+        ]
         if not file_paths:
             print(f"No CSV files found in subfolder: {subdir}")
             continue
 
         dfs = []
-        for f in file_paths:
-            df_loaded = load_csv(f)
+        for csv_path in file_paths:
+            df_loaded = load_csv(csv_path)
             df_processed = process_dataframe(df_loaded, trim_seconds)
-            if not df_processed.empty:
-                dfs.append(df_processed)
-            else:
-                print(f"No data loaded from {f}")
+            if df_processed.empty:
+                print(f"No data loaded from {csv_path}")
+                continue
+
+            # 4. Add metadata columns if available
+            if metadata:
+                # Add the same experimenter name and comments to every row
+                df_processed["ExperimenterName"] = experimenter_name
+                df_processed["Comments"] = comments
+
+                # Map VR -> FlyID
+                # (If a particular VR doesn't exist in vr_fly_map, result will be NaN)
+                df_processed["FlyID"] = df_processed["VR"].map(vr_fly_map)
+            
+            dfs.append(df_processed)
 
         if not dfs:
             print(f"No data frames were loaded for subfolder: {subfolder_name}")
             continue
 
-        combined_df = pd.concat(dfs, ignore_index=True)
-        combined_dfs.append(combined_df)
+        # 5. Concatenate all CSVs from this subfolder
+        combined_df_subfolder = pd.concat(dfs, ignore_index=True)
+        combined_dfs.append(combined_df_subfolder)
     
+    # 6. Combine data from all subfolders
     if combined_dfs:
         final_df = pd.concat(combined_dfs, ignore_index=True)
         return final_df
@@ -357,3 +410,86 @@ def plot_trajectory_heatmap(df_group: pd.DataFrame, group_name: str, bins=50, ex
     plt.title(f'Trajectory Density Heatmap for {group_name} Trials (excluded radius={exclude_radius})')
     plt.axis('equal')
     plt.show()
+
+def get_first_goal_reached(df_normal,
+                           center_goal=(0, 60),
+                           left_goal=(-10.416, 59.088),
+                           right_goal=(10.416, 59.088),
+                           threshold=4,
+                           center_only_configs=None):
+    """
+    Given a dataframe of trial data, determine the first goal reached 
+    and the time at which it was reached for each UniqueTrialID.
+
+    Parameters
+    ----------
+    df_normal : pd.DataFrame
+        The dataframe containing trial data. Must contain columns:
+        ['UniqueTrialID', 'ConfigFile', 'trial_time', 'GameObjectPosX', 'GameObjectPosZ'].
+    center_goal : tuple, optional
+        Coordinates of the center goal.
+    left_goal : tuple, optional
+        Coordinates of the left goal.
+    right_goal : tuple, optional
+        Coordinates of the right goal.
+    threshold : float, optional
+        Distance threshold below which a goal is considered reached.
+    center_only_configs : list of str, optional
+        List of config file names that use only the center goal.
+
+    Returns
+    -------
+    pd.DataFrame
+        A dataframe with one row per UniqueTrialID, including:
+        ['UniqueTrialID', 'ConfigFile', 'FirstReachedGoal', 'GoalReachedTime'].
+    """
+    
+    # Default for center_only_configs if not provided
+    if center_only_configs is None:
+        center_only_configs = [
+            "BinaryChoice10_BlackCylinder_control.json",
+            "BinaryChoice10_constantSize_BlackCylinder_control.json"
+        ]
+    
+    def distance(p1, p2):
+        return np.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)
+    
+    results = []
+    
+    # Group by UniqueTrialID
+    for trial_id, trial_data in df_normal.groupby('UniqueTrialID'):
+        config = trial_data['ConfigFile'].iloc[0]
+        
+        # Determine relevant goals based on config
+        if config in center_only_configs:
+            goals = [('center', center_goal)]
+        else:
+            goals = [('left', left_goal), ('right', right_goal)]
+        
+        first_reached = None
+        reached_time = None
+        
+        # Ensure data is time-sorted
+        trial_data = trial_data.sort_values(by='trial_time')
+        
+        for idx, row in trial_data.iterrows():
+            participant_pos = (row['GameObjectPosX'], row['GameObjectPosZ'])
+            
+            # Check each goal
+            for goal_name, goal_pos in goals:
+                dist = distance(participant_pos, goal_pos)
+                if dist <= threshold:
+                    first_reached = goal_name
+                    reached_time = row['trial_time']
+                    break
+            
+            if first_reached is not None:
+                break
+        
+        # Collect results
+        results.append((trial_id, config, first_reached, reached_time))
+    
+    # Convert to DataFrame
+    results_df = pd.DataFrame(results, columns=['UniqueTrialID', 'ConfigFile', 'FirstReachedGoal', 'GoalReachedTime'])
+    
+    return results_df
