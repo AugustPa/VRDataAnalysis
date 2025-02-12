@@ -13,9 +13,11 @@ Usage:
 Options:
     --velocity_threshold  Velocity threshold for jump detection (default: 100)
     --time_buffer         Time buffer (in seconds) for filtering around jumps (default: 0.1)
-    --edge_trim           Time in seconds to trim from the beginning and end of each segment (default: 0.2)
+    --start_trim          Time in seconds to trim from the beginning of each segment (default: 0.2 seconds)
+    --end_trim            Time in seconds to trim from the end of each segment (default: 0.2 seconds)
     --min_segment_duration  Minimum duration (in seconds) for segments to be kept (default: 0, i.e. no filtering)
     --export_plotly       If set, generate an interactive Plotly visualization (and export as HTML)
+    --show_end_markers    If set, show end markers on trajectories
 """
 
 import pandas as pd
@@ -24,6 +26,7 @@ import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import click
+import os
 
 
 def load_and_preprocess(file_path):
@@ -76,14 +79,14 @@ def segment_trajectories(df):
     return df
 
 
-def trim_segment_edges(df, trim_time=0.2):
+def trim_segment_edges(df, start_trim_time=0.2, end_trim_time=0.2):
     """
     Trim the beginning and end of each trajectory segment to remove edge artifacts.
-    By default, trims 200 ms from both the start and end of each segment.
     
     Parameters:
       df (pd.DataFrame): Input DataFrame with a 'Segment' column.
-      trim_time (float): Time (in seconds) to trim from segment edges.
+      start_trim_time (float): Time (in seconds) to trim from segment start.
+      end_trim_time (float): Time (in seconds) to trim from segment end.
       
     Returns:
       pd.DataFrame: DataFrame with trimmed segments.
@@ -91,8 +94,8 @@ def trim_segment_edges(df, trim_time=0.2):
     def trim_group(group):
         start_time = group['Current Time'].min()
         end_time = group['Current Time'].max()
-        mask = (group['Current Time'] >= start_time + pd.Timedelta(seconds=trim_time)) & \
-               (group['Current Time'] <= end_time - pd.Timedelta(seconds=trim_time))
+        mask = (group['Current Time'] >= start_time + pd.Timedelta(seconds=start_trim_time)) & \
+               (group['Current Time'] <= end_time - pd.Timedelta(seconds=end_trim_time))
         return group[mask]
     
     df_trimmed = df.groupby('Segment', group_keys=False).apply(trim_group)
@@ -151,13 +154,15 @@ def filter_by_duration(df, min_segment_duration):
     return df_filtered
 
 
-def plot_with_matplotlib(df):
+def plot_with_matplotlib(df, show_end_markers=True, output_path=None):
     """
     Generate a static visualization of trajectory segments using Matplotlib.
     Each segment is plotted with a distinct color. Start and end markers are added.
     
     Parameters:
       df (pd.DataFrame): Input DataFrame with a 'Segment' column.
+      show_end_markers (bool): Whether to show end markers.
+      output_path (str): Base path for saving output files (without extension).
     """
     # Get unique steps and trials
     steps = sorted(df['CurrentStep'].unique()) if 'CurrentStep' in df.columns else [0]
@@ -195,18 +200,19 @@ def plot_with_matplotlib(df):
                 seg_data['GameObjectPosX'], seg_data['GameObjectPosZ'],
                 color=cmap(i / n_segments), label=f'Segment {segment}'
             )
-            # Add markers for start (circle) and end (X)
+            # Add markers for start (circle)
             axes[step_idx].plot(seg_data['GameObjectPosX'].iloc[0], seg_data['GameObjectPosZ'].iloc[0],
                      marker='o', color='black')
-            axes[step_idx].plot(seg_data['GameObjectPosX'].iloc[-1], seg_data['GameObjectPosZ'].iloc[-1],
-                     marker='X', color='red')
+            # Add end marker (X) if enabled
+            if show_end_markers:
+                axes[step_idx].plot(seg_data['GameObjectPosX'].iloc[-1], seg_data['GameObjectPosZ'].iloc[-1],
+                         marker='X', color='red')
         
         # Only show x label on bottom subplot
         if step_idx == len(steps) - 1:
             axes[step_idx].set_xlabel('GameObjectPosX')
         axes[step_idx].set_ylabel('GameObjectPosZ')
         axes[step_idx].set_title(f'Step {step} Trajectories')
-        axes[step_idx].legend()
         axes[step_idx].set_aspect('equal', adjustable='box')
         axes[step_idx].grid(True, linestyle='--', alpha=0.7)
     
@@ -215,10 +221,17 @@ def plot_with_matplotlib(df):
     axes[0].set_ylim(y_min, y_max)
     
     plt.tight_layout()
+    
+    if output_path:
+        # Save as both PDF and PNG
+        plt.savefig(f"{output_path}.pdf", bbox_inches='tight')
+        plt.savefig(f"{output_path}.png", bbox_inches='tight', dpi=300)
+        click.echo(f"Matplotlib plots exported to {output_path}.pdf and {output_path}.png")
+    
     plt.show()
 
 
-def plot_with_plotly(df):
+def plot_with_plotly(df, show_end_markers=True, output_path=None):
     """
     Generate an interactive Plotly visualization of trajectory segments.
     Each segment is a separate trace, with markers colored by time (seconds since segment start).
@@ -226,17 +239,24 @@ def plot_with_plotly(df):
     
     Parameters:
       df (pd.DataFrame): Input DataFrame with a 'Segment' column.
+      show_end_markers (bool): Whether to show end markers.
+      output_path (str): Base path for saving output files (without extension).
     """
     # Get unique steps
     steps = sorted(df['CurrentStep'].unique()) if 'CurrentStep' in df.columns else [0]
     
-    # Create subplots - one row for each step with shared axes
+    # Calculate subplot layout
+    n_steps = len(steps)
+    n_rows = (n_steps + 1) // 2  # Ceiling division for odd numbers
+    
+    # Create subplots - arrange in 2 columns
     fig = make_subplots(
-        rows=len(steps), cols=1,
+        rows=n_rows, cols=2,
         subplot_titles=[f'Step {step}' for step in steps],
         vertical_spacing=0.05,
-        shared_xaxes='all',  # Changed to 'all' to ensure complete sharing
-        shared_yaxes='all'   # Changed to 'all' to ensure complete sharing
+        horizontal_spacing=0.05,
+        shared_xaxes='all',
+        shared_yaxes='all'
     )
     
     # Find global axis limits for synchronization
@@ -268,6 +288,10 @@ def plot_with_plotly(df):
     cmap = plt.get_cmap('viridis')
     
     for step_idx, step in enumerate(steps):
+        # Calculate row and column for 2-column layout
+        row = step_idx // 2 + 1
+        col = step_idx % 2 + 1
+        
         step_data = df[df['CurrentStep'] == step] if 'CurrentStep' in df.columns else df
         segments = np.sort(step_data['Segment'].unique())
         n_segments = len(segments)
@@ -291,7 +315,7 @@ def plot_with_plotly(df):
                     name=f'Step {step} - Segment {segment}',
                     text=[f"{t:.2f}s" for t in time_since_start]
                 ),
-                row=step_idx + 1, col=1
+                row=row, col=col
             )
             
             # Start marker (green star)
@@ -304,54 +328,51 @@ def plot_with_plotly(df):
                     name=f'Step {step} - Segment {segment} Start',
                     showlegend=False
                 ),
-                row=step_idx + 1, col=1
+                row=row, col=col
             )
             
-            # End marker (red star)
-            fig.add_trace(
-                go.Scatter(
-                    x=[seg_df['GameObjectPosX'].iloc[-1]],
-                    y=[seg_df['GameObjectPosZ'].iloc[-1]],
-                    mode='markers',
-                    marker=dict(size=10, symbol='star', color='red'),
-                    name=f'Step {step} - Segment {segment} End',
-                    showlegend=False
-                ),
-                row=step_idx + 1, col=1
-            )
+            # End marker (red star) - only if enabled
+            if show_end_markers:
+                fig.add_trace(
+                    go.Scatter(
+                        x=[seg_df['GameObjectPosX'].iloc[-1]],
+                        y=[seg_df['GameObjectPosZ'].iloc[-1]],
+                        mode='markers',
+                        marker=dict(size=10, symbol='star', color='red'),
+                        name=f'Step {step} - Segment {segment} End',
+                        showlegend=False
+                    ),
+                    row=row, col=col
+                )
     
     # Update all axes to maintain aspect ratio and sharing
-    for i in range(len(steps)):
-        fig.update_xaxes(
-            range=[x_min, x_max],
-            constrain='domain',
-            scaleanchor=f'y{i+1}',
-            scaleratio=1,
-            showgrid=True,
-            gridcolor='lightgrey',
-            row=i+1,
-            col=1
-        )
-        fig.update_yaxes(
-            range=[y_min, y_max],
-            constrain='domain',
-            showgrid=True,
-            gridcolor='lightgrey',
-            row=i+1,
-            col=1
-        )
+    for row in range(1, n_rows + 1):
+        for col in range(1, 3):
+            fig.update_xaxes(
+                range=[x_min, x_max],
+                constrain='domain',
+                scaleanchor=f'y{row}',
+                scaleratio=1,
+                showgrid=True,
+                gridcolor='lightgrey',
+                row=row,
+                col=col
+            )
+            fig.update_yaxes(
+                range=[y_min, y_max],
+                constrain='domain',
+                showgrid=True,
+                gridcolor='lightgrey',
+                row=row,
+                col=col
+            )
     
-    # Only show x-axis title on bottom plot
-    fig.update_xaxes(title_text='GameObjectPosX', row=len(steps), col=1)
-    # Show y-axis title on all plots
-    for i in range(len(steps)):
-        fig.update_yaxes(title_text='GameObjectPosZ', row=i+1, col=1)
-    
+    # Update layout
     fig.update_layout(
         title='Interactive Trajectories (Plotly)',
         hovermode='closest',
-        height=400 * len(steps),  # Adjust height based on number of steps
-        width=800,  # Fixed width
+        height=700 * n_rows,  # Adjust height based on number of rows
+        width=1400,  # Wider to accommodate 2 columns
         showlegend=True,
         legend=dict(
             yanchor="top",
@@ -361,8 +382,11 @@ def plot_with_plotly(df):
         )
     )
     
-    fig.write_html('interactive_trajectories.html')
-    click.echo("Plotly HTML exported to interactive_trajectories.html")
+    if output_path:
+        html_path = f"{output_path}.html"
+        fig.write_html(html_path)
+        click.echo(f"Plotly visualization exported to {html_path}")
+    
     fig.show()
 
 
@@ -370,11 +394,13 @@ def plot_with_plotly(df):
 @click.argument('file_path', type=click.Path(exists=True))
 @click.option('--velocity_threshold', default=100, help='Velocity threshold for jump detection.')
 @click.option('--time_buffer', default=0.1, help='Time buffer (seconds) for filtering around jumps.')
-@click.option('--edge_trim', default=0.2, help='Time in seconds to trim from segment edges (default: 0.2 seconds).')
+@click.option('--start_trim', default=0, help='Time in seconds to trim from the beginning of each segment (default: 0.2 seconds).')
+@click.option('--end_trim', default=0.2, help='Time in seconds to trim from the end of each segment (default: 0.2 seconds).')
 @click.option('--min_segment_duration', default=0, help='Minimum segment duration (seconds) to keep (default: 0, i.e. no filtering).')
 @click.option('--export_plotly', is_flag=True, help='Export interactive Plotly plot as an HTML file and display it.')
 @click.option('--decimate_factor', default=1, help='Factor to reduce number of plotted points (e.g., 2 means plot every 2nd point).')
-def main(file_path, velocity_threshold, time_buffer, edge_trim, min_segment_duration, export_plotly, decimate_factor):
+@click.option('--show_end_markers', is_flag=True, default=False, help='Show end markers on trajectories.')
+def main(file_path, velocity_threshold, time_buffer, start_trim, end_trim, min_segment_duration, export_plotly, decimate_factor, show_end_markers):
     """
     Process VR trajectory data from a CSV file by:
       - Preprocessing and velocity computation.
@@ -391,7 +417,7 @@ def main(file_path, velocity_threshold, time_buffer, edge_trim, min_segment_dura
     df = segment_trajectories(df)
     
     click.echo("Trimming segment edges...")
-    df = trim_segment_edges(df, trim_time=edge_trim)
+    df = trim_segment_edges(df, start_trim_time=start_trim, end_trim_time=end_trim)
     
     click.echo("Filtering jumps...")
     df = filter_jumps(df, velocity_threshold, time_buffer)
@@ -405,12 +431,15 @@ def main(file_path, velocity_threshold, time_buffer, edge_trim, min_segment_dura
         click.echo(f"Decimating data by factor of {decimate_factor}...")
         df = df.iloc[::decimate_factor].copy()
     
+    # Get base output path from input file path (remove extension)
+    output_base = os.path.splitext(file_path)[0]
+    
     if export_plotly:
         click.echo("Generating interactive Plotly visualization...")
-        plot_with_plotly(df)
+        plot_with_plotly(df, show_end_markers=show_end_markers, output_path=output_base)
     else:
         click.echo("Generating static Matplotlib visualization...")
-        plot_with_matplotlib(df)
+        plot_with_matplotlib(df, show_end_markers=show_end_markers, output_path=output_base)
 
 
 if __name__ == "__main__":
