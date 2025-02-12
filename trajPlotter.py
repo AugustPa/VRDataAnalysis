@@ -477,13 +477,19 @@ def plot_with_plotly(df, show_end_markers=True, output_path=None, reset_time=Tru
             "yanchor": "top"
         }],
         sliders=[slider_config],
-        title="Interactive Trajectories (Vectorized Subset Updates)",
+        title=f"Interactive Trajectories - {os.path.basename(output_path) if output_path else 'Unnamed'}",
         hovermode="closest"
     )
 
-    # Synchronize the x and y axes across subplots by setting 'matches'
-    fig.update_xaxes(range=x_range, matches='x')
-    fig.update_yaxes(range=y_range, matches='y')
+    # Synchronize the x and y axes across subplots by setting 'matches' and ensuring 1:1 aspect ratio
+    for i in range(1, n_rows + 1):
+        for j in range(1, 3):
+            if n_steps > 1:
+                fig.update_xaxes(range=x_range, matches='x', scaleanchor=f'y{i}', scaleratio=1, row=i, col=j)
+                fig.update_yaxes(range=y_range, matches='y', scaleanchor=f'x{i}', scaleratio=1, row=i, col=j)
+            else:
+                fig.update_xaxes(range=x_range, scaleanchor='y', scaleratio=1)
+                fig.update_yaxes(range=y_range, scaleanchor='x', scaleratio=1)
 
     # Set the default visible data to the final frame (complete trajectory).
     final_frame = frames[-1]
@@ -507,7 +513,7 @@ def plot_with_plotly(df, show_end_markers=True, output_path=None, reset_time=Tru
 
 
 @click.command()
-@click.argument('file_path', type=click.Path(exists=True))
+@click.argument('path', type=click.Path(exists=True))
 @click.option('--velocity_threshold', default=100, help='Velocity threshold for jump detection.')
 @click.option('--time_buffer', default=0.1, help='Time buffer (seconds) for filtering around jumps.')
 @click.option('--start_trim', default=0, help='Time in seconds to trim from the beginning of each segment (default: 0.2 seconds).')
@@ -517,16 +523,47 @@ def plot_with_plotly(df, show_end_markers=True, output_path=None, reset_time=Tru
 @click.option('--decimate_factor', default=1, help='Factor to reduce number of plotted points (e.g., 2 means plot every 2nd point).')
 @click.option('--show_end_markers', is_flag=True, default=False, help='Show end markers on trajectories.')
 @click.option('--reset_time', is_flag=True, default=True, help='Reset time coloring for each segment.')
-def main(file_path, velocity_threshold, time_buffer, start_trim, end_trim, min_segment_duration, export_plotly, decimate_factor, show_end_markers, reset_time):
+def main(path, velocity_threshold, time_buffer, start_trim, end_trim, min_segment_duration, export_plotly, decimate_factor, show_end_markers, reset_time):
     """
-    Process VR trajectory data from a CSV file by:
-      - Preprocessing and velocity computation.
-      - Segmenting based on trial/step resets.
-      - Trimming edge artifacts.
-      - Filtering out anomalous jumps.
-      - Optionally filtering segments by minimum duration.
-      - Visualizing the resulting trajectories.
+    Process VR trajectory data from CSV files in a directory by:
+      - Finding all CSV files recursively in the given directory
+      - For each file:
+        - Preprocessing and velocity computation
+        - Segmenting based on trial/step resets
+        - Trimming edge artifacts
+        - Filtering out anomalous jumps
+        - Optionally filtering segments by minimum duration
+        - Visualizing the resulting trajectories
+    
+    If path is a file, processes just that file.
+    If path is a directory, processes all CSV files in that directory recursively.
     """
+    # Check if path is a directory or file
+    if os.path.isdir(path):
+        # Find all CSV files recursively
+        csv_files = []
+        for root, _, files in os.walk(path):
+            for file in files:
+                if file.endswith('.csv'):
+                    csv_files.append(os.path.join(root, file))
+        
+        if not csv_files:
+            click.echo(f"No CSV files found in directory: {path}")
+            return
+        
+        # Process each CSV file
+        for file_path in csv_files:
+            click.echo(f"\nProcessing file: {file_path}")
+            process_single_file(file_path, velocity_threshold, time_buffer, start_trim, end_trim, 
+                              min_segment_duration, export_plotly, decimate_factor, show_end_markers, reset_time)
+    else:
+        # Process single file
+        process_single_file(path, velocity_threshold, time_buffer, start_trim, end_trim,
+                          min_segment_duration, export_plotly, decimate_factor, show_end_markers, reset_time)
+
+def process_single_file(file_path, velocity_threshold, time_buffer, start_trim, end_trim,
+                       min_segment_duration, export_plotly, decimate_factor, show_end_markers, reset_time):
+    """Helper function to process a single CSV file with the given parameters."""
     click.echo("Loading and preprocessing data...")
     df = load_and_preprocess(file_path)
     
@@ -557,7 +594,6 @@ def main(file_path, velocity_threshold, time_buffer, start_trim, end_trim, min_s
     else:
         click.echo("Generating static Matplotlib visualization...")
         plot_with_matplotlib(df, show_end_markers=show_end_markers, output_path=output_base, reset_time=reset_time)
-
 
 if __name__ == "__main__":
     main()
