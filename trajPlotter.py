@@ -257,7 +257,7 @@ def plot_with_plotly(df, show_end_markers=True, output_path=None, reset_time=Tru
     """
     Generate an interactive Plotly visualization of trajectory segments.
     Each segment is a separate trace, with markers colored by time (seconds since segment start).
-    Start and end markers are also displayed.
+    Includes a time slider for playback animation.
     
     Parameters:
       df (pd.DataFrame): Input DataFrame with a 'Segment' column.
@@ -278,8 +278,8 @@ def plot_with_plotly(df, show_end_markers=True, output_path=None, reset_time=Tru
         subplot_titles=[f'Step {step}' for step in steps],
         vertical_spacing=0.05,
         horizontal_spacing=0.05,
-        shared_xaxes='all',
-        shared_yaxes='all'
+        shared_xaxes=True,
+        shared_yaxes=True
     )
     
     # Find global axis limits for synchronization
@@ -296,7 +296,7 @@ def plot_with_plotly(df, show_end_markers=True, output_path=None, reset_time=Tru
     y_min -= y_padding
     y_max += y_padding
     
-    # Ensure square aspect ratio by making ranges equal if needed
+    # Ensure square aspect ratio
     x_range = x_max - x_min
     y_range = y_max - y_min
     if x_range > y_range:
@@ -307,64 +307,78 @@ def plot_with_plotly(df, show_end_markers=True, output_path=None, reset_time=Tru
         center = (x_max + x_min) / 2
         x_min = center - y_range/2
         x_max = center + y_range/2
-    
-    cmap = plt.get_cmap('viridis')
-    
+
+    # Create frames for animation
+    frames = []
+    max_time = 0
+
+    # First pass to find max time across all segments
     for step_idx, step in enumerate(steps):
-        # Calculate row and column for 2-column layout
-        row = step_idx // 2 + 1
-        col = step_idx % 2 + 1
-        
         step_data = df[df['CurrentStep'] == step] if 'CurrentStep' in df.columns else df
-        segments = np.sort(step_data['Segment'].unique())
-        n_segments = len(segments)
-        
-        # Get step start time for continuous coloring
         step_start_time = step_data['Current Time'].min()
         
-        for i, segment in enumerate(segments):
+        for segment in step_data['Segment'].unique():
+            seg_df = step_data[step_data['Segment'] == segment]
+            if reset_time:
+                seg_start_time = seg_df['Current Time'].min()
+                time_values = (seg_df['Current Time'] - seg_start_time).dt.total_seconds()
+            else:
+                time_values = (seg_df['Current Time'] - step_start_time).dt.total_seconds()
+            max_time = max(max_time, time_values.max())
+
+    # Create 50 frames evenly spaced in time
+    n_frames = 50
+    time_points = np.linspace(0, max_time, n_frames)
+    
+    # Create base traces (empty) for each segment
+    for step_idx, step in enumerate(steps):
+        row = (step_idx // 2) + 1
+        col = (step_idx % 2) + 1
+        
+        step_data = df[df['CurrentStep'] == step] if 'CurrentStep' in df.columns else df
+        step_start_time = step_data['Current Time'].min()
+        
+        for segment in step_data['Segment'].unique():
             seg_df = step_data[step_data['Segment'] == segment]
             
-            # Calculate time for coloring
             if reset_time:
-                # Reset time for each segment
-                time_since_start = (seg_df['Current Time'] - seg_df['Current Time'].min()).dt.total_seconds()
+                seg_start_time = seg_df['Current Time'].min()
+                time_values = (seg_df['Current Time'] - seg_start_time).dt.total_seconds()
             else:
-                # Continuous time across segments
-                time_since_start = (seg_df['Current Time'] - step_start_time).dt.total_seconds()
+                time_values = (seg_df['Current Time'] - step_start_time).dt.total_seconds()
             
+            # Add empty base trace
             fig.add_trace(
                 go.Scatter(
-                    x=seg_df['GameObjectPosX'],
-                    y=seg_df['GameObjectPosZ'],
+                    x=[],
+                    y=[],
                     mode='lines+markers',
                     marker=dict(
                         size=5,
-                        color=time_since_start,
+                        color=time_values,
                         colorscale='Viridis',
-                        colorbar=dict(title='Time (s)') if i == n_segments - 1 and step_idx == len(steps) - 1 else None,
+                        showscale=True,
+                        colorbar=dict(title='Time (s)')
                     ),
                     line=dict(color='lightgrey', width=1),
-                    name=f'Step {step} - Segment {segment}',
-                    text=[f"{t:.2f}s" for t in time_since_start]
+                    name=f'Step {step} - Segment {segment}'
                 ),
                 row=row, col=col
             )
             
-            # Start marker (green star)
+            # Add start marker
             fig.add_trace(
                 go.Scatter(
                     x=[seg_df['GameObjectPosX'].iloc[0]],
                     y=[seg_df['GameObjectPosZ'].iloc[0]],
                     mode='markers',
                     marker=dict(size=10, symbol='star', color='green'),
-                    name=f'Step {step} - Segment {segment} Start',
+                    name=f'Start {step}-{segment}',
                     showlegend=False
                 ),
                 row=row, col=col
             )
             
-            # End marker (red star) - only if enabled
             if show_end_markers:
                 fig.add_trace(
                     go.Scatter(
@@ -372,13 +386,126 @@ def plot_with_plotly(df, show_end_markers=True, output_path=None, reset_time=Tru
                         y=[seg_df['GameObjectPosZ'].iloc[-1]],
                         mode='markers',
                         marker=dict(size=10, symbol='star', color='red'),
-                        name=f'Step {step} - Segment {segment} End',
+                        name=f'End {step}-{segment}',
                         showlegend=False
                     ),
                     row=row, col=col
                 )
+
+    # Create frames for each time point
+    for t in time_points:
+        frame_data = []
+        
+        for step_idx, step in enumerate(steps):
+            step_data = df[df['CurrentStep'] == step] if 'CurrentStep' in df.columns else df
+            step_start_time = step_data['Current Time'].min()
+            
+            for segment in step_data['Segment'].unique():
+                seg_df = step_data[step_data['Segment'] == segment]
+                
+                if reset_time:
+                    seg_start_time = seg_df['Current Time'].min()
+                    time_values = (seg_df['Current Time'] - seg_start_time).dt.total_seconds()
+                else:
+                    time_values = (seg_df['Current Time'] - step_start_time).dt.total_seconds()
+                
+                # Get points up to current time
+                mask = time_values <= t
+                frame_data.append(
+                    go.Scatter(
+                        x=seg_df['GameObjectPosX'][mask],
+                        y=seg_df['GameObjectPosZ'][mask],
+                        mode='lines+markers',
+                        marker=dict(
+                            size=5,
+                            color=time_values[mask],
+                            colorscale='Viridis',
+                            showscale=True,
+                            colorbar=dict(title='Time (s)')
+                        ),
+                        line=dict(color='lightgrey', width=1)
+                    )
+                )
+                
+                # Add constant traces for start/end markers
+                frame_data.append(
+                    go.Scatter(
+                        x=[seg_df['GameObjectPosX'].iloc[0]],
+                        y=[seg_df['GameObjectPosZ'].iloc[0]],
+                        mode='markers',
+                        marker=dict(size=10, symbol='star', color='green')
+                    )
+                )
+                
+                if show_end_markers:
+                    frame_data.append(
+                        go.Scatter(
+                            x=[seg_df['GameObjectPosX'].iloc[-1]],
+                            y=[seg_df['GameObjectPosZ'].iloc[-1]],
+                            mode='markers',
+                            marker=dict(size=10, symbol='star', color='red')
+                        )
+                    )
+        
+        frames.append(go.Frame(data=frame_data, name=f"frame_{t:.1f}"))
+
+    fig.frames = frames
+
+    # Add slider and play button
+    fig.update_layout(
+        updatemenus=[
+            dict(
+                type="buttons",
+                showactive=False,
+                buttons=[
+                    dict(label="Play",
+                         method="animate",
+                         args=[None, {"frame": {"duration": 50, "redraw": True},
+                                    "fromcurrent": True,
+                                    "mode": "immediate"}]),
+                    dict(label="Pause",
+                         method="animate",
+                         args=[[None], {"frame": {"duration": 0, "redraw": False},
+                                      "mode": "immediate"}])
+                ],
+                x=0.1,
+                y=0,
+                xanchor="right",
+                yanchor="top"
+            )
+        ],
+        sliders=[{
+            "active": 0,
+            "yanchor": "top",
+            "xanchor": "left",
+            "currentvalue": {
+                "font": {"size": 16},
+                "prefix": "Time: ",
+                "suffix": " s",
+                "visible": True,
+                "xanchor": "right"
+            },
+            "transition": {"duration": 50},
+            "pad": {"b": 10, "t": 50},
+            "len": 0.9,
+            "x": 0.1,
+            "y": 0,
+            "steps": [
+                {
+                    "args": [
+                        [f"frame_{t:.1f}"],
+                        {"frame": {"duration": 50, "redraw": True},
+                         "mode": "immediate"}
+                    ],
+                    "label": f"{t:.1f}",
+                    "method": "animate"
+                }
+                for t in time_points
+            ]
+        }]
+    )
     
-    # Update all axes to maintain aspect ratio and sharing
+    # Update axes to maintain aspect ratio and sharing
     for row in range(1, n_rows + 1):
         for col in range(1, 3):
             fig.update_xaxes(
@@ -389,7 +516,8 @@ def plot_with_plotly(df, show_end_markers=True, output_path=None, reset_time=Tru
                 showgrid=True,
                 gridcolor='lightgrey',
                 row=row,
-                col=col
+                col=col,
+                title_text='GameObjectPosX' if row == n_rows else ''
             )
             fig.update_yaxes(
                 range=[y_min, y_max],
@@ -397,15 +525,16 @@ def plot_with_plotly(df, show_end_markers=True, output_path=None, reset_time=Tru
                 showgrid=True,
                 gridcolor='lightgrey',
                 row=row,
-                col=col
+                col=col,
+                title_text='GameObjectPosZ'
             )
     
     # Update layout
     fig.update_layout(
         title='Interactive Trajectories (Plotly)',
         hovermode='closest',
-        height=700 * n_rows,  # Adjust height based on number of rows
-        width=1400,  # Wider to accommodate 2 columns
+        height=500 * n_rows,
+        width=1200,
         showlegend=True,
         legend=dict(
             yanchor="top",
