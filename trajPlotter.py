@@ -154,7 +154,7 @@ def filter_by_duration(df, min_segment_duration):
     return df_filtered
 
 
-def plot_with_matplotlib(df, show_end_markers=True, output_path=None):
+def plot_with_matplotlib(df, show_end_markers=True, output_path=None, reset_time=True):
     """
     Generate a static visualization of trajectory segments using Matplotlib.
     Each segment is plotted with a distinct color. Start and end markers are added.
@@ -163,6 +163,7 @@ def plot_with_matplotlib(df, show_end_markers=True, output_path=None):
       df (pd.DataFrame): Input DataFrame with a 'Segment' column.
       show_end_markers (bool): Whether to show end markers.
       output_path (str): Base path for saving output files (without extension).
+      reset_time (bool): Whether to reset time coloring for each segment.
     """
     # Get unique steps and trials
     steps = sorted(df['CurrentStep'].unique()) if 'CurrentStep' in df.columns else [0]
@@ -194,19 +195,40 @@ def plot_with_matplotlib(df, show_end_markers=True, output_path=None):
         segments = step_data['Segment'].unique()
         n_segments = len(segments)
         
+        # Get step start time for continuous coloring
+        step_start_time = step_data['Current Time'].min()
+        
         for i, segment in enumerate(segments):
             seg_data = step_data[step_data['Segment'] == segment]
-            axes[step_idx].plot(
+            
+            # Calculate time for coloring
+            if reset_time:
+                # Reset time for each segment
+                time_values = (seg_data['Current Time'] - seg_data['Current Time'].min()).dt.total_seconds()
+                max_time = time_values.max()
+                color_values = time_values / max_time if max_time > 0 else np.zeros_like(time_values)
+            else:
+                # Continuous time across segments
+                time_values = (seg_data['Current Time'] - step_start_time).dt.total_seconds()
+                max_time = (step_data['Current Time'] - step_start_time).dt.total_seconds().max()
+                color_values = time_values / max_time if max_time > 0 else np.zeros_like(time_values)
+            
+            # Plot trajectory with time-based coloring
+            points = axes[step_idx].scatter(
                 seg_data['GameObjectPosX'], seg_data['GameObjectPosZ'],
-                color=cmap(i / n_segments), label=f'Segment {segment}'
+                c=time_values, cmap='viridis', s=20
             )
+            
             # Add markers for start (circle)
             axes[step_idx].plot(seg_data['GameObjectPosX'].iloc[0], seg_data['GameObjectPosZ'].iloc[0],
-                     marker='o', color='black')
+                     marker='o', color='black', markersize=10)
             # Add end marker (X) if enabled
             if show_end_markers:
                 axes[step_idx].plot(seg_data['GameObjectPosX'].iloc[-1], seg_data['GameObjectPosZ'].iloc[-1],
-                         marker='X', color='red')
+                         marker='X', color='red', markersize=10)
+        
+        # Add colorbar for time
+        plt.colorbar(points, ax=axes[step_idx], label='Time (s)')
         
         # Only show x label on bottom subplot
         if step_idx == len(steps) - 1:
@@ -231,7 +253,7 @@ def plot_with_matplotlib(df, show_end_markers=True, output_path=None):
     plt.show()
 
 
-def plot_with_plotly(df, show_end_markers=True, output_path=None):
+def plot_with_plotly(df, show_end_markers=True, output_path=None, reset_time=True):
     """
     Generate an interactive Plotly visualization of trajectory segments.
     Each segment is a separate trace, with markers colored by time (seconds since segment start).
@@ -241,6 +263,7 @@ def plot_with_plotly(df, show_end_markers=True, output_path=None):
       df (pd.DataFrame): Input DataFrame with a 'Segment' column.
       show_end_markers (bool): Whether to show end markers.
       output_path (str): Base path for saving output files (without extension).
+      reset_time (bool): Whether to reset time coloring for each segment.
     """
     # Get unique steps
     steps = sorted(df['CurrentStep'].unique()) if 'CurrentStep' in df.columns else [0]
@@ -296,9 +319,19 @@ def plot_with_plotly(df, show_end_markers=True, output_path=None):
         segments = np.sort(step_data['Segment'].unique())
         n_segments = len(segments)
         
+        # Get step start time for continuous coloring
+        step_start_time = step_data['Current Time'].min()
+        
         for i, segment in enumerate(segments):
             seg_df = step_data[step_data['Segment'] == segment]
-            time_since_start = (seg_df['Current Time'] - seg_df['Current Time'].min()).dt.total_seconds()
+            
+            # Calculate time for coloring
+            if reset_time:
+                # Reset time for each segment
+                time_since_start = (seg_df['Current Time'] - seg_df['Current Time'].min()).dt.total_seconds()
+            else:
+                # Continuous time across segments
+                time_since_start = (seg_df['Current Time'] - step_start_time).dt.total_seconds()
             
             fig.add_trace(
                 go.Scatter(
@@ -400,7 +433,8 @@ def plot_with_plotly(df, show_end_markers=True, output_path=None):
 @click.option('--export_plotly', is_flag=True, help='Export interactive Plotly plot as an HTML file and display it.')
 @click.option('--decimate_factor', default=1, help='Factor to reduce number of plotted points (e.g., 2 means plot every 2nd point).')
 @click.option('--show_end_markers', is_flag=True, default=False, help='Show end markers on trajectories.')
-def main(file_path, velocity_threshold, time_buffer, start_trim, end_trim, min_segment_duration, export_plotly, decimate_factor, show_end_markers):
+@click.option('--reset_time', is_flag=True, default=True, help='Reset time coloring for each segment.')
+def main(file_path, velocity_threshold, time_buffer, start_trim, end_trim, min_segment_duration, export_plotly, decimate_factor, show_end_markers, reset_time):
     """
     Process VR trajectory data from a CSV file by:
       - Preprocessing and velocity computation.
@@ -436,10 +470,10 @@ def main(file_path, velocity_threshold, time_buffer, start_trim, end_trim, min_s
     
     if export_plotly:
         click.echo("Generating interactive Plotly visualization...")
-        plot_with_plotly(df, show_end_markers=show_end_markers, output_path=output_base)
+        plot_with_plotly(df, show_end_markers=show_end_markers, output_path=output_base, reset_time=reset_time)
     else:
         click.echo("Generating static Matplotlib visualization...")
-        plot_with_matplotlib(df, show_end_markers=show_end_markers, output_path=output_base)
+        plot_with_matplotlib(df, show_end_markers=show_end_markers, output_path=output_base, reset_time=reset_time)
 
 
 if __name__ == "__main__":
