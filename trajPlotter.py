@@ -253,303 +253,257 @@ def plot_with_matplotlib(df, show_end_markers=True, output_path=None, reset_time
     plt.show()
 
 
-def plot_with_plotly(df, show_end_markers=True, output_path=None, reset_time=True):
+
+
+def plot_with_plotly(df, show_end_markers=True, output_path=None, reset_time=True, n_frames=50):
     """
-    Generate an interactive Plotly visualization of trajectory segments.
-    Each segment is a separate trace, with markers colored by time (seconds since segment start).
-    Includes a time slider for playback animation.
+    Generate an interactive Plotly visualization of trajectory segments using
+    vectorized subset updates. Each segment is a separate trace, and a slider
+    controls the timeline. The function also:
+      - Sets all subplots to share synchronized x/y axes with proper padding.
+      - Defaults the view to the end of the timeline (complete trajectories).
+      - Preserves the color information (based on time) in each animated trace.
     
     Parameters:
       df (pd.DataFrame): Input DataFrame with a 'Segment' column.
       show_end_markers (bool): Whether to show end markers.
-      output_path (str): Base path for saving output files (without extension).
-      reset_time (bool): Whether to reset time coloring for each segment.
+      output_path (str): Base path for saving the output HTML file.
+      reset_time (bool): If True, reset the time for each segment; otherwise use global time.
+      n_frames (int): Number of frames for the slider animation.
     """
-    # Get unique steps
-    steps = sorted(df['CurrentStep'].unique()) if 'CurrentStep' in df.columns else [0]
+    import numpy as np
+    from plotly.subplots import make_subplots
+    import plotly.graph_objects as go
+    import click
+
+    # Determine steps (if available) to assign segments to subplots.
+    if 'CurrentStep' in df.columns:
+        steps = sorted(df['CurrentStep'].unique())
+    else:
+        steps = [0]
     
-    # Calculate subplot layout
+    # Map each step to a subplot (arranged in 2 columns)
+    step_to_subplot = {}
     n_steps = len(steps)
-    n_rows = (n_steps + 1) // 2  # Ceiling division for odd numbers
+    n_rows = (n_steps + 1) // 2  # Ceiling division for 2 columns
+    for i, step in enumerate(steps):
+        row = (i // 2) + 1
+        col = (i % 2) + 1
+        step_to_subplot[step] = (row, col)
     
-    # Create subplots - arrange in 2 columns
-    fig = make_subplots(
-        rows=n_rows, cols=2,
-        subplot_titles=[f'Step {step}' for step in steps],
-        vertical_spacing=0.05,
-        horizontal_spacing=0.05,
-        shared_xaxes=True,
-        shared_yaxes=True
-    )
-    
-    # Find global axis limits for synchronization
-    x_min = df['GameObjectPosX'].min()
-    x_max = df['GameObjectPosX'].max()
-    y_min = df['GameObjectPosZ'].min()
-    y_max = df['GameObjectPosZ'].max()
-    
-    # Add some padding to the limits
+    # Create subplots if more than one step; otherwise, use a single plot.
+    if n_steps > 1:
+        subplot_titles = [f'Step {step}' for step in steps]
+        fig = make_subplots(rows=n_rows, cols=2,
+                            subplot_titles=subplot_titles,
+                            shared_xaxes=True, shared_yaxes=True,
+                            vertical_spacing=0.1, horizontal_spacing=0.1)
+    else:
+        fig = go.Figure()
+
+    # Precompute data for each segment.
+    segments_data = []
+    if 'CurrentStep' in df.columns:
+        for step in steps:
+            step_data = df[df['CurrentStep'] == step]
+            for segment in sorted(step_data['Segment'].unique()):
+                seg_df = step_data[step_data['Segment'] == segment]
+                x_arr = seg_df['GameObjectPosX'].to_numpy()
+                y_arr = seg_df['GameObjectPosZ'].to_numpy()
+                # Determine time values (reset per segment or continuous across the step)
+                if reset_time:
+                    t_arr = (seg_df['Current Time'] - seg_df['Current Time'].min()).dt.total_seconds().to_numpy()
+                else:
+                    t_arr = (seg_df['Current Time'] - step_data['Current Time'].min()).dt.total_seconds().to_numpy()
+                segments_data.append({
+                    'step': step,
+                    'segment': segment,
+                    'x': x_arr,
+                    'y': y_arr,
+                    't': t_arr,
+                    'subplot': step_to_subplot[step]
+                })
+    else:
+        # Fallback: one step only.
+        for segment in sorted(df['Segment'].unique()):
+            seg_df = df[df['Segment'] == segment]
+            x_arr = seg_df['GameObjectPosX'].to_numpy()
+            y_arr = seg_df['GameObjectPosZ'].to_numpy()
+            if reset_time:
+                t_arr = (seg_df['Current Time'] - seg_df['Current Time'].min()).dt.total_seconds().to_numpy()
+            else:
+                t_arr = (seg_df['Current Time'] - df['Current Time'].min()).dt.total_seconds().to_numpy()
+            segments_data.append({
+                'step': 0,
+                'segment': segment,
+                'x': x_arr,
+                'y': y_arr,
+                't': t_arr,
+                'subplot': (1, 1)
+            })
+
+    # Compute global max time (for color scaling) and global x/y limits.
+    global_max_time = max([seg['t'].max() for seg in segments_data if len(seg['t']) > 0])
+    x_min = min([np.min(seg['x']) for seg in segments_data if len(seg['x']) > 0])
+    x_max = max([np.max(seg['x']) for seg in segments_data if len(seg['x']) > 0])
+    y_min = min([np.min(seg['y']) for seg in segments_data if len(seg['y']) > 0])
+    y_max = max([np.max(seg['y']) for seg in segments_data if len(seg['y']) > 0])
+    # Add padding to the limits.
     x_padding = (x_max - x_min) * 0.1
     y_padding = (y_max - y_min) * 0.1
-    x_min -= x_padding
-    x_max += x_padding
-    y_min -= y_padding
-    y_max += y_padding
-    
-    # Ensure square aspect ratio
-    x_range = x_max - x_min
-    y_range = y_max - y_min
-    if x_range > y_range:
-        center = (y_max + y_min) / 2
-        y_min = center - x_range/2
-        y_max = center + x_range/2
-    else:
-        center = (x_max + x_min) / 2
-        x_min = center - y_range/2
-        x_max = center + y_range/2
+    x_range = [x_min - x_padding, x_max + x_padding]
+    y_range = [y_min - y_padding, y_max + y_padding]
 
-    # Create frames for animation
+    # Create base traces (one per segment) with empty data but proper marker setup.
+    for seg in segments_data:
+        row, col = seg['subplot']
+        trace = go.Scatter(
+            x=[], 
+            y=[],
+            mode='lines+markers',
+            marker=dict(
+                size=5,
+                color=[],  # This will be updated in each frame.
+                colorscale='Viridis',
+                cmin=0,
+                cmax=global_max_time
+            ),
+            line=dict(color='lightgrey', width=1),
+            name=f"Step {seg['step']} - Segment {seg['segment']}"
+        )
+        if n_steps > 1:
+            fig.add_trace(trace, row=row, col=col)
+        else:
+            fig.add_trace(trace)
+
+    # Optionally, add static start (and end) markers that remain constant.
+    for seg in segments_data:
+        row, col = seg['subplot']
+        # Start marker (green star)
+        start_marker = go.Scatter(
+            x=[seg['x'][0]],
+            y=[seg['y'][0]],
+            mode='markers',
+            marker=dict(size=10, symbol='star', color='green'),
+            name=f"Start {seg['segment']}",
+            showlegend=False
+        )
+        if n_steps > 1:
+            fig.add_trace(start_marker, row=row, col=col)
+        else:
+            fig.add_trace(start_marker)
+        # End marker (red star)
+        if show_end_markers:
+            end_marker = go.Scatter(
+                x=[seg['x'][-1]],
+                y=[seg['y'][-1]],
+                mode='markers',
+                marker=dict(size=10, symbol='star', color='red'),
+                name=f"End {seg['segment']}",
+                showlegend=False
+            )
+            if n_steps > 1:
+                fig.add_trace(end_marker, row=row, col=col)
+            else:
+                fig.add_trace(end_marker)
+
+    # Build frames: each frame updates each segment trace using vectorized slicing.
+    time_points = np.linspace(0, global_max_time, n_frames)
     frames = []
-    max_time = 0
-
-    # First pass to find max time across all segments
-    for step_idx, step in enumerate(steps):
-        step_data = df[df['CurrentStep'] == step] if 'CurrentStep' in df.columns else df
-        step_start_time = step_data['Current Time'].min()
-        
-        for segment in step_data['Segment'].unique():
-            seg_df = step_data[step_data['Segment'] == segment]
-            if reset_time:
-                seg_start_time = seg_df['Current Time'].min()
-                time_values = (seg_df['Current Time'] - seg_start_time).dt.total_seconds()
-            else:
-                time_values = (seg_df['Current Time'] - step_start_time).dt.total_seconds()
-            max_time = max(max_time, time_values.max())
-
-    # Create 50 frames evenly spaced in time
-    n_frames = 50
-    time_points = np.linspace(0, max_time, n_frames)
-    
-    # Create base traces (empty) for each segment
-    for step_idx, step in enumerate(steps):
-        row = (step_idx // 2) + 1
-        col = (step_idx % 2) + 1
-        
-        step_data = df[df['CurrentStep'] == step] if 'CurrentStep' in df.columns else df
-        step_start_time = step_data['Current Time'].min()
-        
-        for segment in step_data['Segment'].unique():
-            seg_df = step_data[step_data['Segment'] == segment]
-            
-            if reset_time:
-                seg_start_time = seg_df['Current Time'].min()
-                time_values = (seg_df['Current Time'] - seg_start_time).dt.total_seconds()
-            else:
-                time_values = (seg_df['Current Time'] - step_start_time).dt.total_seconds()
-            
-            # Add empty base trace
-            fig.add_trace(
-                go.Scatter(
-                    x=[],
-                    y=[],
-                    mode='lines+markers',
-                    marker=dict(
-                        size=5,
-                        color=time_values,
-                        colorscale='Viridis',
-                        showscale=True,
-                        colorbar=dict(title='Time (s)')
-                    ),
-                    line=dict(color='lightgrey', width=1),
-                    name=f'Step {step} - Segment {segment}'
-                ),
-                row=row, col=col
-            )
-            
-            # Add start marker
-            fig.add_trace(
-                go.Scatter(
-                    x=[seg_df['GameObjectPosX'].iloc[0]],
-                    y=[seg_df['GameObjectPosZ'].iloc[0]],
-                    mode='markers',
-                    marker=dict(size=10, symbol='star', color='green'),
-                    name=f'Start {step}-{segment}',
-                    showlegend=False
-                ),
-                row=row, col=col
-            )
-            
-            if show_end_markers:
-                fig.add_trace(
-                    go.Scatter(
-                        x=[seg_df['GameObjectPosX'].iloc[-1]],
-                        y=[seg_df['GameObjectPosZ'].iloc[-1]],
-                        mode='markers',
-                        marker=dict(size=10, symbol='star', color='red'),
-                        name=f'End {step}-{segment}',
-                        showlegend=False
-                    ),
-                    row=row, col=col
-                )
-
-    # Create frames for each time point
-    for t in time_points:
-        frame_data = []
-        
-        for step_idx, step in enumerate(steps):
-            step_data = df[df['CurrentStep'] == step] if 'CurrentStep' in df.columns else df
-            step_start_time = step_data['Current Time'].min()
-            
-            for segment in step_data['Segment'].unique():
-                seg_df = step_data[step_data['Segment'] == segment]
-                
-                if reset_time:
-                    seg_start_time = seg_df['Current Time'].min()
-                    time_values = (seg_df['Current Time'] - seg_start_time).dt.total_seconds()
-                else:
-                    time_values = (seg_df['Current Time'] - step_start_time).dt.total_seconds()
-                
-                # Get points up to current time
-                mask = time_values <= t
-                frame_data.append(
-                    go.Scatter(
-                        x=seg_df['GameObjectPosX'][mask],
-                        y=seg_df['GameObjectPosZ'][mask],
-                        mode='lines+markers',
-                        marker=dict(
-                            size=5,
-                            color=time_values[mask],
-                            colorscale='Viridis',
-                            showscale=True,
-                            colorbar=dict(title='Time (s)')
-                        ),
-                        line=dict(color='lightgrey', width=1)
-                    )
-                )
-                
-                # Add constant traces for start/end markers
-                frame_data.append(
-                    go.Scatter(
-                        x=[seg_df['GameObjectPosX'].iloc[0]],
-                        y=[seg_df['GameObjectPosZ'].iloc[0]],
-                        mode='markers',
-                        marker=dict(size=10, symbol='star', color='green')
-                    )
-                )
-                
-                if show_end_markers:
-                    frame_data.append(
-                        go.Scatter(
-                            x=[seg_df['GameObjectPosX'].iloc[-1]],
-                            y=[seg_df['GameObjectPosZ'].iloc[-1]],
-                            mode='markers',
-                            marker=dict(size=10, symbol='star', color='red')
-                        )
-                    )
-        
-        frames.append(go.Frame(data=frame_data, name=f"frame_{t:.1f}"))
-
+    for t_val in time_points:
+        frame_traces = []
+        for seg in segments_data:
+            mask = seg['t'] <= t_val
+            new_x = seg['x'][mask]
+            new_y = seg['y'][mask]
+            new_color = seg['t'][mask]
+            frame_traces.append(dict(
+                x=new_x,
+                y=new_y,
+                marker=dict(color=new_color)
+            ))
+        frames.append(go.Frame(data=frame_traces, name=f"frame_{t_val:.2f}"))
     fig.frames = frames
 
-    # Add slider and play button
+    # Build slider steps.
+    slider_steps = []
+    for t_val in time_points:
+        slider_steps.append({
+            "args": [[f"frame_{t_val:.2f}"],
+                     {"frame": {"duration": 0, "redraw": False},
+                      "mode": "immediate",
+                      "transition": {"duration": 0}}],
+            "label": f"{t_val:.1f}",
+            "method": "animate"
+        })
+
+    # Set slider to default to the last frame (complete trajectory).
+    slider_config = {
+        "active": n_frames - 1,
+        "currentvalue": {
+            "font": {"size": 16},
+            "prefix": "Time: ",
+            "visible": True,
+            "xanchor": "right"
+        },
+        "pad": {"b": 10, "t": 50},
+        "steps": slider_steps
+    }
+
+    # Configure play/pause buttons and add the slider.
     fig.update_layout(
-        updatemenus=[
-            dict(
-                type="buttons",
-                showactive=False,
-                buttons=[
-                    dict(label="Play",
-                         method="animate",
-                         args=[None, {"frame": {"duration": 50, "redraw": True},
-                                    "fromcurrent": True,
-                                    "mode": "immediate"}]),
-                    dict(label="Pause",
-                         method="animate",
-                         args=[[None], {"frame": {"duration": 0, "redraw": False},
-                                      "mode": "immediate"}])
-                ],
-                x=0.1,
-                y=0,
-                xanchor="right",
-                yanchor="top"
-            )
-        ],
-        sliders=[{
-            "active": 0,
-            "yanchor": "top",
-            "xanchor": "left",
-            "currentvalue": {
-                "font": {"size": 16},
-                "prefix": "Time: ",
-                "suffix": " s",
-                "visible": True,
-                "xanchor": "right"
-            },
-            "transition": {"duration": 50},
-            "pad": {"b": 10, "t": 50},
-            "len": 0.9,
-            "x": 0.1,
-            "y": 0,
-            "steps": [
+        updatemenus=[{
+            "buttons": [
                 {
-                    "args": [
-                        [f"frame_{t:.1f}"],
-                        {"frame": {"duration": 50, "redraw": True},
-                         "mode": "immediate"}
-                    ],
-                    "label": f"{t:.1f}",
+                    "args": [None, {"frame": {"duration": 50, "redraw": False},
+                                    "fromcurrent": True, "transition": {"duration": 0}}],
+                    "label": "Play",
+                    "method": "animate"
+                },
+                {
+                    "args": [[None], {"frame": {"duration": 0, "redraw": False},
+                                      "mode": "immediate",
+                                      "transition": {"duration": 0}}],
+                    "label": "Pause",
                     "method": "animate"
                 }
-                for t in time_points
-            ]
-        }]
+            ],
+            "direction": "left",
+            "pad": {"r": 10, "t": 70},
+            "type": "buttons",
+            "x": 0.1,
+            "y": 0,
+            "xanchor": "right",
+            "yanchor": "top"
+        }],
+        sliders=[slider_config],
+        title="Interactive Trajectories (Vectorized Subset Updates)",
+        hovermode="closest"
     )
-    
-    # Update axes to maintain aspect ratio and sharing
-    for row in range(1, n_rows + 1):
-        for col in range(1, 3):
-            fig.update_xaxes(
-                range=[x_min, x_max],
-                constrain='domain',
-                scaleanchor=f'y{row}',
-                scaleratio=1,
-                showgrid=True,
-                gridcolor='lightgrey',
-                row=row,
-                col=col,
-                title_text='GameObjectPosX' if row == n_rows else ''
-            )
-            fig.update_yaxes(
-                range=[y_min, y_max],
-                constrain='domain',
-                showgrid=True,
-                gridcolor='lightgrey',
-                row=row,
-                col=col,
-                title_text='GameObjectPosZ'
-            )
-    
-    # Update layout
-    fig.update_layout(
-        title='Interactive Trajectories (Plotly)',
-        hovermode='closest',
-        height=500 * n_rows,
-        width=1200,
-        showlegend=True,
-        legend=dict(
-            yanchor="top",
-            y=0.99,
-            xanchor="left",
-            x=1.05
-        )
-    )
-    
+
+    # Synchronize the x and y axes across subplots by setting 'matches'
+    fig.update_xaxes(range=x_range, matches='x')
+    fig.update_yaxes(range=y_range, matches='y')
+
+    # Set the default visible data to the final frame (complete trajectory).
+    final_frame = frames[-1]
+    num_animated_traces = len(segments_data)
+    for i in range(num_animated_traces):
+        fig.data[i].x = final_frame.data[i]['x']
+        fig.data[i].y = final_frame.data[i]['y']
+        fig.data[i].marker.color = final_frame.data[i]['marker']['color']
+
+    # Optionally export the figure as HTML.
     if output_path:
         html_path = f"{output_path}.html"
         fig.write_html(html_path)
         click.echo(f"Plotly visualization exported to {html_path}")
     
     fig.show()
+
+
+
+
 
 
 @click.command()
