@@ -1,0 +1,9 @@
+*.csv
+*.json
+*.png
+*.jpg
+*.html
+*.pdf
+*.zip
+*.DS_Store
+*.pyc

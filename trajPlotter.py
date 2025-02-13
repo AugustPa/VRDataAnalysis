@@ -255,14 +255,14 @@ def plot_with_matplotlib(df, show_end_markers=True, output_path=None, reset_time
 
 
 
-def plot_with_plotly(df, show_end_markers=True, output_path=None, reset_time=True, n_frames=50):
+def plot_with_plotly(df, show_end_markers=True, output_path=None, reset_time=True, n_frames=50, color_by_trial=True):
     """
     Generate an interactive Plotly visualization of trajectory segments using
     vectorized subset updates. Each segment is a separate trace, and a slider
     controls the timeline. The function also:
       - Sets all subplots to share synchronized x/y axes with proper padding.
       - Defaults the view to the end of the timeline (complete trajectories).
-      - Preserves the color information (based on time) in each animated trace.
+      - Colors traces either by trial number or by time.
     
     Parameters:
       df (pd.DataFrame): Input DataFrame with a 'Segment' column.
@@ -270,6 +270,7 @@ def plot_with_plotly(df, show_end_markers=True, output_path=None, reset_time=Tru
       output_path (str): Base path for saving the output HTML file.
       reset_time (bool): If True, reset the time for each segment; otherwise use global time.
       n_frames (int): Number of frames for the slider animation.
+      color_by_trial (bool): If True, color by trial number; if False, color by time.
     """
     import numpy as np
     from plotly.subplots import make_subplots
@@ -310,17 +311,22 @@ def plot_with_plotly(df, show_end_markers=True, output_path=None, reset_time=Tru
                 seg_df = step_data[step_data['Segment'] == segment]
                 x_arr = seg_df['GameObjectPosX'].to_numpy()
                 y_arr = seg_df['GameObjectPosZ'].to_numpy()
-                # Determine time values (reset per segment or continuous across the step)
-                if reset_time:
-                    t_arr = (seg_df['Current Time'] - seg_df['Current Time'].min()).dt.total_seconds().to_numpy()
+                # Determine color values based on trial or time
+                if color_by_trial and 'CurrentTrial' in seg_df.columns:
+                    color_arr = np.full_like(x_arr, seg_df['CurrentTrial'].iloc[0], dtype=float)
                 else:
-                    t_arr = (seg_df['Current Time'] - step_data['Current Time'].min()).dt.total_seconds().to_numpy()
+                    # Fallback to time-based coloring
+                    if reset_time:
+                        color_arr = (seg_df['Current Time'] - seg_df['Current Time'].min()).dt.total_seconds().to_numpy()
+                    else:
+                        color_arr = (seg_df['Current Time'] - step_data['Current Time'].min()).dt.total_seconds().to_numpy()
                 segments_data.append({
                     'step': step,
                     'segment': segment,
                     'x': x_arr,
                     'y': y_arr,
-                    't': t_arr,
+                    't': (seg_df['Current Time'] - seg_df['Current Time'].min()).dt.total_seconds().to_numpy(),  # Keep time for animation
+                    'color': color_arr,
                     'subplot': step_to_subplot[step]
                 })
     else:
@@ -329,18 +335,35 @@ def plot_with_plotly(df, show_end_markers=True, output_path=None, reset_time=Tru
             seg_df = df[df['Segment'] == segment]
             x_arr = seg_df['GameObjectPosX'].to_numpy()
             y_arr = seg_df['GameObjectPosZ'].to_numpy()
-            if reset_time:
-                t_arr = (seg_df['Current Time'] - seg_df['Current Time'].min()).dt.total_seconds().to_numpy()
+            # Determine color values based on trial or time
+            if color_by_trial and 'CurrentTrial' in seg_df.columns:
+                color_arr = np.full_like(x_arr, seg_df['CurrentTrial'].iloc[0], dtype=float)
             else:
-                t_arr = (seg_df['Current Time'] - df['Current Time'].min()).dt.total_seconds().to_numpy()
+                if reset_time:
+                    color_arr = (seg_df['Current Time'] - seg_df['Current Time'].min()).dt.total_seconds().to_numpy()
+                else:
+                    color_arr = (seg_df['Current Time'] - df['Current Time'].min()).dt.total_seconds().to_numpy()
             segments_data.append({
                 'step': 0,
                 'segment': segment,
                 'x': x_arr,
                 'y': y_arr,
-                't': t_arr,
+                't': (seg_df['Current Time'] - seg_df['Current Time'].min()).dt.total_seconds().to_numpy(),  # Keep time for animation
+                'color': color_arr,
                 'subplot': (1, 1)
             })
+
+    # Compute global max values for color scaling
+    if color_by_trial and 'CurrentTrial' in df.columns:
+        global_max_color = df['CurrentTrial'].max()
+        global_min_color = df['CurrentTrial'].min()
+        colorscale = 'Viridis'
+        color_label = 'Trial'
+    else:
+        global_max_color = max([seg['color'].max() for seg in segments_data if len(seg['color']) > 0])
+        global_min_color = 0
+        colorscale = 'Viridis'
+        color_label = 'Time (s)'
 
     # Compute global max time (for color scaling) and global x/y limits.
     global_max_time = max([seg['t'].max() for seg in segments_data if len(seg['t']) > 0])
@@ -362,13 +385,14 @@ def plot_with_plotly(df, show_end_markers=True, output_path=None, reset_time=Tru
             y=[],
             mode='lines+markers',
             marker=dict(
-                size=5,
-                color=[],  # This will be updated in each frame.
-                colorscale='Viridis',
-                cmin=0,
-                cmax=global_max_time
+                size=3,
+                color=[],  # This will be updated in each frame
+                colorscale=colorscale,
+                cmin=global_min_color,
+                cmax=global_max_color,
+                colorbar=dict(title=color_label)
             ),
-            line=dict(color='lightgrey', width=1),
+            line=dict(color='lightgrey', width=2),
             name=f"Step {seg['step']} - Segment {seg['segment']}"
         )
         if n_steps > 1:
@@ -416,7 +440,7 @@ def plot_with_plotly(df, show_end_markers=True, output_path=None, reset_time=Tru
             mask = seg['t'] <= t_val
             new_x = seg['x'][mask]
             new_y = seg['y'][mask]
-            new_color = seg['t'][mask]
+            new_color = seg['color'][mask]
             frame_traces.append(dict(
                 x=new_x,
                 y=new_y,
@@ -523,7 +547,8 @@ def plot_with_plotly(df, show_end_markers=True, output_path=None, reset_time=Tru
 @click.option('--decimate_factor', default=1, help='Factor to reduce number of plotted points (e.g., 2 means plot every 2nd point).')
 @click.option('--show_end_markers', is_flag=True, default=False, help='Show end markers on trajectories.')
 @click.option('--reset_time', is_flag=True, default=True, help='Reset time coloring for each segment.')
-def main(path, velocity_threshold, time_buffer, start_trim, end_trim, min_segment_duration, export_plotly, decimate_factor, show_end_markers, reset_time):
+@click.option('--color_by_trial', is_flag=True, default=True, help='Color trajectories by trial number instead of time.')
+def main(path, velocity_threshold, time_buffer, start_trim, end_trim, min_segment_duration, export_plotly, decimate_factor, show_end_markers, reset_time, color_by_trial):
     """
     Process VR trajectory data from CSV files in a directory by:
       - Finding all CSV files recursively in the given directory
@@ -555,14 +580,14 @@ def main(path, velocity_threshold, time_buffer, start_trim, end_trim, min_segmen
         for file_path in csv_files:
             click.echo(f"\nProcessing file: {file_path}")
             process_single_file(file_path, velocity_threshold, time_buffer, start_trim, end_trim, 
-                              min_segment_duration, export_plotly, decimate_factor, show_end_markers, reset_time)
+                              min_segment_duration, export_plotly, decimate_factor, show_end_markers, reset_time, color_by_trial)
     else:
         # Process single file
         process_single_file(path, velocity_threshold, time_buffer, start_trim, end_trim,
-                          min_segment_duration, export_plotly, decimate_factor, show_end_markers, reset_time)
+                          min_segment_duration, export_plotly, decimate_factor, show_end_markers, reset_time, color_by_trial)
 
 def process_single_file(file_path, velocity_threshold, time_buffer, start_trim, end_trim,
-                       min_segment_duration, export_plotly, decimate_factor, show_end_markers, reset_time):
+                       min_segment_duration, export_plotly, decimate_factor, show_end_markers, reset_time, color_by_trial):
     """Helper function to process a single CSV file with the given parameters."""
     click.echo("Loading and preprocessing data...")
     df = load_and_preprocess(file_path)
@@ -590,7 +615,7 @@ def process_single_file(file_path, velocity_threshold, time_buffer, start_trim, 
     
     if export_plotly:
         click.echo("Generating interactive Plotly visualization...")
-        plot_with_plotly(df, show_end_markers=show_end_markers, output_path=output_base, reset_time=reset_time)
+        plot_with_plotly(df, show_end_markers=show_end_markers, output_path=output_base, reset_time=reset_time, color_by_trial=color_by_trial)
     else:
         click.echo("Generating static Matplotlib visualization...")
         plot_with_matplotlib(df, show_end_markers=show_end_markers, output_path=output_base, reset_time=reset_time)
