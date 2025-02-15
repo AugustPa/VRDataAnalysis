@@ -216,16 +216,16 @@ def plot_with_matplotlib(df, show_end_markers=True, output_path=None, reset_time
             # Plot trajectory with time-based coloring
             points = axes[step_idx].scatter(
                 seg_data['GameObjectPosX'], seg_data['GameObjectPosZ'],
-                c=time_values, cmap='viridis', s=20
+                c=time_values, cmap='viridis', s=50
             )
             
             # Add markers for start (circle)
             axes[step_idx].plot(seg_data['GameObjectPosX'].iloc[0], seg_data['GameObjectPosZ'].iloc[0],
-                     marker='o', color='black', markersize=10)
+                     marker='o', color='black', markersize=15)
             # Add end marker (X) if enabled
             if show_end_markers:
                 axes[step_idx].plot(seg_data['GameObjectPosX'].iloc[-1], seg_data['GameObjectPosZ'].iloc[-1],
-                         marker='X', color='red', markersize=10)
+                         marker='X', color='red', markersize=15)
         
         # Add colorbar for time
         plt.colorbar(points, ax=axes[step_idx], label='Time (s)')
@@ -385,7 +385,7 @@ def plot_with_plotly(df, show_end_markers=True, output_path=None, reset_time=Tru
             y=[],
             mode='lines+markers',
             marker=dict(
-                size=3,
+                size=4,
                 color=[],  # This will be updated in each frame
                 colorscale=colorscale,
                 cmin=global_min_color,
@@ -408,7 +408,7 @@ def plot_with_plotly(df, show_end_markers=True, output_path=None, reset_time=Tru
             x=[seg['x'][0]],
             y=[seg['y'][0]],
             mode='markers',
-            marker=dict(size=10, symbol='star', color='green'),
+            marker=dict(size=15, symbol='star', color='green'),
             name=f"Start {seg['segment']}",
             showlegend=False
         )
@@ -422,7 +422,7 @@ def plot_with_plotly(df, show_end_markers=True, output_path=None, reset_time=Tru
                 x=[seg['x'][-1]],
                 y=[seg['y'][-1]],
                 mode='markers',
-                marker=dict(size=10, symbol='star', color='red'),
+                marker=dict(size=15, symbol='star', color='red'),
                 name=f"End {seg['segment']}",
                 showlegend=False
             )
@@ -576,6 +576,8 @@ def main(path, velocity_threshold, time_buffer, start_trim, end_trim, min_segmen
             click.echo(f"No CSV files found in directory: {path}")
             return
         
+        #sort csv files by name
+        csv_files.sort()
         # Process each CSV file
         for file_path in csv_files:
             click.echo(f"\nProcessing file: {file_path}")
