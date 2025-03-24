@@ -415,7 +415,7 @@ def get_first_goal_reached(df_normal,
                            center_goal=(0, 60),
                            left_goal=(-10.416, 59.088),
                            right_goal=(10.416, 59.088),
-                           threshold=4,
+                           threshold=3.5,
                            center_only_configs=None):
     """
     Given a dataframe of trial data, determine the first goal reached 
@@ -491,5 +491,125 @@ def get_first_goal_reached(df_normal,
     
     # Convert to DataFrame
     results_df = pd.DataFrame(results, columns=['UniqueTrialID', 'ConfigFile', 'FirstReachedGoal', 'GoalReachedTime'])
+    
+    return results_df
+
+def get_first_goal_reached_v2(df_normal,
+                              center_goal=(0, 60),
+                              left_goal=(-10.416, 59.088),
+                              right_goal=(10.416, 59.088),
+                              # Triple-goal positions (can be different from the above)
+                              triple_center_goal=(0, 60),
+                              triple_left_goal=(-20.5212, 56.381557),
+                              triple_right_goal=(20.5212, 56.381557),
+                              threshold=4,
+                              center_only_configs=None,
+                              triple_goals_configs=None):
+    """
+    Given a dataframe of trial data, determine the first goal reached 
+    and the time at which it was reached for each UniqueTrialID.
+    
+    Allows for three categories of configs:
+      1) center-only        -> uses center_goal
+      2) left+right         -> uses left_goal, right_goal
+      3) left+center+right  -> uses triple_left_goal, triple_center_goal, triple_right_goal
+
+    Parameters
+    ----------
+    df_normal : pd.DataFrame
+        The dataframe containing trial data. Must contain columns:
+        ['UniqueTrialID', 'ConfigFile', 'trial_time', 'GameObjectPosX', 'GameObjectPosZ'].
+    center_goal : tuple, optional
+        Coordinates of the center goal for center-only configs.
+    left_goal : tuple, optional
+        Coordinates of the left goal (two-goal configs).
+    right_goal : tuple, optional
+        Coordinates of the right goal (two-goal configs).
+    triple_center_goal : tuple, optional
+        Coordinates of the center goal for three-goal configs.
+    triple_left_goal : tuple, optional
+        Coordinates of the left goal for three-goal configs.
+    triple_right_goal : tuple, optional
+        Coordinates of the right goal for three-goal configs.
+    threshold : float, optional
+        Distance threshold below which a goal is considered reached.
+    center_only_configs : list of str, optional
+        List of config file names that use only the center goal.
+    triple_goals_configs : list of str, optional
+        List of config file names that use three goals (left, center, right).
+
+    Returns
+    -------
+    pd.DataFrame
+        A dataframe with one row per UniqueTrialID, including:
+        ['UniqueTrialID', 'ConfigFile', 'FirstReachedGoal', 'GoalReachedTime'].
+    """
+    
+    # Default for center_only_configs if not provided
+    if center_only_configs is None:
+        center_only_configs = [
+            "BinaryChoice10_BlackCylinder_control.json",
+            "BinaryChoice10_constantSize_BlackCylinder_control.json"
+        ]
+    
+    # Default for triple_goals_configs if not provided
+    if triple_goals_configs is None:
+        triple_goals_configs = [
+            "3Cylinders111_constantSize.json"
+        ]
+
+    def distance(p1, p2):
+        return np.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)
+    
+    results = []
+    
+    # Group by UniqueTrialID
+    for trial_id, trial_data in df_normal.groupby('UniqueTrialID'):
+        config = trial_data['ConfigFile'].iloc[0]
+        
+        # Determine relevant goals based on config
+        if config in center_only_configs:
+            # Only the center goal
+            goals = [('center', center_goal)]
+        elif config in triple_goals_configs:
+            # Three goals, using the "triple" positions
+            goals = [
+                ('left', triple_left_goal),
+                ('center', triple_center_goal),
+                ('right', triple_right_goal)
+            ]
+        else:
+            # Default case: left + right
+            goals = [('left', left_goal), ('right', right_goal)]
+        
+        first_reached = None
+        reached_time = None
+        
+        # Sort data by time within the trial
+        trial_data = trial_data.sort_values(by='trial_time')
+        
+        # Check each position in chronological order
+        for _, row in trial_data.iterrows():
+            participant_pos = (row['GameObjectPosX'], row['GameObjectPosZ'])
+            
+            # Check each goal
+            for goal_name, goal_pos in goals:
+                dist = distance(participant_pos, goal_pos)
+                if dist <= threshold:
+                    first_reached = goal_name
+                    reached_time = row['trial_time']
+                    break
+            
+            if first_reached is not None:
+                break
+        
+        # Collect results
+        results.append((trial_id, config, first_reached, reached_time))
+    
+    # Convert to DataFrame
+    results_df = pd.DataFrame(
+        results,
+        columns=['UniqueTrialID', 'ConfigFile', 'FirstReachedGoal', 'GoalReachedTime']
+    )
     
     return results_df
