@@ -90,7 +90,7 @@ def get_combined_df(directory: str, trim_seconds: float = 1.0) -> pd.DataFrame:
         file_paths = [
             os.path.join(subdir, f) 
             for f in os.listdir(subdir) 
-            if f.endswith('.csv')
+            if f.endswith('.csv') and '_VR' in f
         ]
         if not file_paths:
             print(f"No CSV files found in subfolder: {subdir}")
