@@ -1,3 +1,4 @@
 DrosophilaChoices/Data/*
 *.png
 *.pkl
+Ants/preprocessed_data/*
