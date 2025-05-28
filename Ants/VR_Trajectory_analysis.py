@@ -6,6 +6,7 @@ import json
 import matplotlib.pyplot as plt
 import seaborn as sns
 from scipy.stats import mannwhitneyu
+import re
 
 def load_csv(file_path: str) -> pd.DataFrame:
     """
@@ -25,16 +26,37 @@ def process_dataframe(df: pd.DataFrame, trim_seconds: float = 1.0) -> pd.DataFra
     """
     if df.empty:
         return df
+
+    # --- housekeeping -------------------------------------------------------
     df['elapsed_time'] = (df['Current Time'] - df['Current Time'].min()).dt.total_seconds()
-    df['CurrentTrial'] = df['CurrentTrial'].astype(int)
-    df['CurrentStep'] = df['CurrentStep'].astype(int)
+
+    # columns that should always be int
+    int_cols = ['CurrentTrial', 'CurrentStep']
+    if 'stepIndex' in df.columns:                # add if present
+        int_cols.append('stepIndex')
+    df[int_cols] = df[int_cols].astype(int)
+
     df['VR'] = df['VR'].astype(str)
-    df = df.sort_values(['CurrentTrial', 'CurrentStep', 'elapsed_time'])
-    grouped = df.groupby(['CurrentTrial', 'CurrentStep'])
-    df = grouped.apply(lambda x: x[(x['elapsed_time'] >= trim_seconds) &
-                                   (x['elapsed_time'] <= x['elapsed_time'].max() - trim_seconds)]).reset_index(drop=True)
-    # Remove rows where both positions are zero
+
+    # --- dynamic sort / group columns --------------------------------------
+    group_cols = ['CurrentTrial', 'CurrentStep'] + (['stepIndex'] if 'stepIndex' in df.columns else [])
+    sort_cols  = group_cols + ['elapsed_time']
+
+    df = df.sort_values(sort_cols)
+
+    # --- trim first & last second within each group -------------------------
+    grouped = df.groupby(group_cols, dropna=False)
+    df = (
+        grouped.apply(
+            lambda g: g[(g['elapsed_time'] >= trim_seconds) &
+                        (g['elapsed_time'] <= g['elapsed_time'].max() - trim_seconds)]
+        )
+        .reset_index(drop=True)
+    )
+
+    # --- remove rows with both positions at 0 -------------------------------
     df = df[(df['GameObjectPosX'] != 0) | (df['GameObjectPosZ'] != 0)]
+
     return df
 
 def get_combined_df(directory: str, trim_seconds: float = 1.0) -> pd.DataFrame:
@@ -138,7 +160,14 @@ def add_trial_id_and_displacement(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
 
-    df['UniqueTrialID'] = df.groupby(['SourceFile', 'CurrentStep', 'CurrentTrial']).ngroup()
+    # core set of columns that are always there
+    base_cols = ['SourceFile', 'CurrentStep', 'CurrentTrial']
+
+    # add stepIndex only if the column exists
+    group_cols = base_cols + (['stepIndex'] if 'stepIndex' in df.columns else [])
+
+    # create the id (dropna=False keeps rows where one of the keys is NaN)
+    df['UniqueTrialID'] = df.groupby(group_cols, dropna=False).ngroup()
     df = df.sort_values(by=['UniqueTrialID', 'Current Time'])
 
     # Calculate stepwise displacement
@@ -613,3 +642,15 @@ def get_first_goal_reached_v2(df_normal,
     )
     
     return results_df
+
+def parse_angle_from_config(config_filename: str, default_angle: float = 20.0) -> float:
+    """
+    Extracts the 'XX' in e.g. "constantSize_XXdeg" from the config filename.
+    If no match is found (deg info is missing), returns default_angle (usually 20°).
+    """
+    pattern = r"_([0-9]+)deg"  # looks for something like "_30deg_"
+    match = re.search(pattern, config_filename)
+    if match:
+        return float(match.group(1))
+    else:
+        return default_angle
