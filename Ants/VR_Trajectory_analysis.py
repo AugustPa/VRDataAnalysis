@@ -179,9 +179,43 @@ def add_trial_id_and_displacement(df: pd.DataFrame) -> pd.DataFrame:
     df['step_distance'] = df['step_distance'].fillna(0)
 
     # Total displacement per UniqueTrialID
-    total_displacement = df.groupby('UniqueTrialID')['step_distance'].sum().reset_index()
-    total_displacement.rename(columns={'step_distance': 'TotalDisplacement'}, inplace=True)
-    df = df.merge(total_displacement, on='UniqueTrialID', how='left')
+    # make sure each trial is ordered chronologically first
+    df = df.sort_values(['UniqueTrialID', 'elapsed_time'])
+
+    # 2) first/last coordinates → displacement & overall travel direction
+    disp_dir = (
+        df.groupby('UniqueTrialID')
+        .agg(first_x=('GameObjectPosX', 'first'),
+            last_x =('GameObjectPosX',  'last'),
+            first_z=('GameObjectPosZ', 'first'),
+            last_z =('GameObjectPosZ',  'last'))
+        .assign(
+            # straight-line distance  (same as before)
+            TotalDisplacement=lambda g:
+                np.hypot(g['last_x'] - g['first_x'],
+                        g['last_z'] - g['first_z']),
+
+            # overall travel heading in Unity’s yaw convention
+                    TravelDirectionDeg=lambda g:
+                        (np.degrees(np.arctan2(          # <── note argument order!
+                                g['last_x'] - g['first_x'], #   dx  (east–west)
+                                g['last_z'] - g['first_z']  # , dz (north–south)
+                            )) + 360) % 360                 # wrap into 0–359 °
+                )
+                    .reset_index()
+                    [['UniqueTrialID', 'TotalDisplacement', 'TravelDirectionDeg']]
+                )
+    # 2b) total path length (cumulative distance)
+    path_length = (
+        df.groupby('UniqueTrialID')['step_distance']
+        .sum()
+        .reset_index()
+        .rename(columns={'step_distance': 'TotalPathLength'})
+    )
+
+    # 3) merge back into the main dataframe
+    df = df.merge(disp_dir, on='UniqueTrialID', how='left')
+    df = df.merge(path_length, on='UniqueTrialID', how='left')
 
     return df
 
@@ -207,6 +241,30 @@ def classify_trials_by_displacement(df: pd.DataFrame, min_disp=0, max_disp=50):
     df_excessive = df[df['UniqueTrialID'].isin(excessive_trial_ids)].reset_index(drop=True)
 
     return df_stationary, df_normal, df_excessive, stationary_trial_ids, normal_trial_ids, excessive_trial_ids
+
+def classify_trials_by_path_length(df: pd.DataFrame, min_length=0, max_length=50):
+    """
+    Classify trials into stationary, normal, and excessive based on path length thresholds.
+    Returns three DataFrames and corresponding trial IDs.
+    """
+    if df.empty:
+        return df, df, df, [], [], []
+
+    total_path_length = df.groupby('UniqueTrialID')['TotalPathLength'].first().reset_index()
+
+    stationary_trial_ids = total_path_length[total_path_length['TotalPathLength'] < min_length]['UniqueTrialID'].unique()
+    normal_trial_ids = total_path_length[
+        (total_path_length['TotalPathLength'] >= min_length) &
+        (total_path_length['TotalPathLength'] <= max_length)
+    ]['UniqueTrialID'].unique()
+    excessive_trial_ids = total_path_length[total_path_length['TotalPathLength'] > max_length]['UniqueTrialID'].unique()
+
+    df_stationary = df[df['UniqueTrialID'].isin(stationary_trial_ids)].reset_index(drop=True)
+    df_normal = df[df['UniqueTrialID'].isin(normal_trial_ids)].reset_index(drop=True)
+    df_excessive = df[df['UniqueTrialID'].isin(excessive_trial_ids)].reset_index(drop=True)
+
+    return df_stationary, df_normal, df_excessive, stationary_trial_ids, normal_trial_ids, excessive_trial_ids
+
 
 def add_trial_time(df_normal: pd.DataFrame) -> pd.DataFrame:
     """
