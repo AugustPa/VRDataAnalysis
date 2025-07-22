@@ -13,7 +13,7 @@ def load_csv(file_path: str) -> pd.DataFrame:
     Load a CSV file and perform initial processing.
     """
     try:
-        df = pd.read_csv(file_path, parse_dates=['Current Time']).sort_values('Current Time')
+        df = pd.read_csv(file_path, parse_dates=['Current Time'], low_memory=False).sort_values('Current Time')
         df['SourceFile'] = os.path.basename(file_path)  # Include the filename
         return df
     except Exception as e:
@@ -28,13 +28,22 @@ def process_dataframe(df: pd.DataFrame, trim_seconds: float = 1.0) -> pd.DataFra
         return df
 
     # --- housekeeping -------------------------------------------------------
+    # Ensure 'Current Time' is a datetime
+    df['Current Time'] = pd.to_datetime(df['Current Time'], errors='coerce')
+
+    # Drop rows where datetime parsing failed
+    df = df.dropna(subset=['Current Time'])
+
     df['elapsed_time'] = (df['Current Time'] - df['Current Time'].min()).dt.total_seconds()
 
     # columns that should always be int
     int_cols = ['CurrentTrial', 'CurrentStep']
     if 'stepIndex' in df.columns:                # add if present
         int_cols.append('stepIndex')
-    df[int_cols] = df[int_cols].astype(int)
+        
+    df[int_cols] = df[int_cols].apply(pd.to_numeric, errors='coerce')  # Ensure coercion
+    df = df.dropna(subset=int_cols)  # Drop rows with NaNs in int columns
+    df[int_cols] = df[int_cols].astype(int)  # Now safe to cast
 
     df['VR'] = df['VR'].astype(str)
 
@@ -55,7 +64,7 @@ def process_dataframe(df: pd.DataFrame, trim_seconds: float = 1.0) -> pd.DataFra
     )
 
     # --- remove rows with both positions at 0 -------------------------------
-    df = df[(df['GameObjectPosX'] != 0) | (df['GameObjectPosZ'] != 0)]
+    #df = df[(df['GameObjectPosX'] != 0) | (df['GameObjectPosZ'] != 0)]
 
     return df
 
