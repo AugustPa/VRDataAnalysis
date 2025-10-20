@@ -2,3 +2,4 @@ DrosophilaChoices/Data/*
 *.png
 *.pkl
 Ants/preprocessed_data/*
+Ants/parquet_out/*
